@@ -257,24 +257,81 @@ function Invoke-CampusLogin($Client, $Config) {
     throw '套餐请求已提交，但校园网尚未确认本机上线。请查看状态后再试。'
 }
 
-# 创建或移除当前用户的开机启动项；后台运行失败时可查看本地日志。
+# 显示不抢焦点的桌面角落提示，八秒后关闭；通知失败不影响登录结果。
+function Show-CampusNotification([string]$Message, [bool]$Success) {
+    $form = $null
+    $timer = $null
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        if (-not ('CampusNotificationWindow' -as [type])) {
+            Add-Type -WarningAction SilentlyContinue -ReferencedAssemblies System.Windows.Forms,System.Drawing -TypeDefinition @'
+using System.Windows.Forms;
+public class CampusNotificationWindow : Form {
+    // Display status without taking keyboard focus away from the active application.
+    protected override bool ShowWithoutActivation { get { return true; } }
+    // Keep the notification non-activating even when it is first shown.
+    protected override CreateParams CreateParams {
+        get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000; return cp; }
+    }
+}
+'@
+        }
+        $form = New-Object CampusNotificationWindow
+        $form.FormBorderStyle = 'FixedToolWindow'
+        $form.ShowInTaskbar = $false
+        $form.TopMost = $true
+        $form.StartPosition = 'Manual'
+        $form.Text = '校园网自动登录'
+        $form.ClientSize = [Drawing.Size]::new(370, 105)
+        $form.Font = [Drawing.Font]::new('Microsoft YaHei UI', 10)
+        $area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $form.Location = [Drawing.Point]::new(($area.Right - $form.Width - 16), ($area.Bottom - $form.Height - 16))
+        $label = [Windows.Forms.Label]::new()
+        $label.SetBounds(16, 15, 338, 78)
+        $label.Text = $Message
+        $label.ForeColor = if ($Success) { [Drawing.Color]::DarkGreen } else { [Drawing.Color]::DarkRed }
+        [void]$form.Controls.Add($label)
+        $timer = [Windows.Forms.Timer]::new()
+        $timer.Interval = 8000
+        # Close only this notification window; do not affect the user's other applications.
+        $timer.Add_Tick({ $form.Close() })
+        $timer.Start()
+        [Windows.Forms.Application]::Run($form)
+    } catch { Write-CampusLog '桌面提示无法显示，登录结果仍可在日志中查看。' }
+    finally {
+        if ($null -ne $timer) { $timer.Dispose() }
+        if ($null -ne $form) { $form.Dispose() }
+    }
+}
+
+# 创建当前用户专属的登录触发任务，无额外延迟、不要求网络已连接、不需要存储 Windows 密码。
+function New-CampusStartupTask([string]$ScriptPath) {
+    $userId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $ScriptPath + '" -Startup') -WorkingDirectory (Split-Path -Parent $ScriptPath)
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+    $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 6)
+    return New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description '登录 Windows 后立即检查校园网并自动登录；结果以桌面提示显示。'
+}
+
+# 注册或移除当前用户任务；只有新任务注册成功才移除旧快捷方式，避免迁移失败后无法自启。
 function Set-CampusStartup([bool]$Enabled, [string]$ScriptPath) {
+    $userId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $taskName = 'NSU-net-autologin-' + $userId
     $path = Join-Path ([Environment]::GetFolderPath('Startup')) 'CampusNetworkLogin.lnk'
     if (-not $Enabled) {
+        if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false }
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
         return
     }
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($path)
-    $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $shortcut.Arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $ScriptPath + '"'
-    $shortcut.WorkingDirectory = Split-Path -Parent $ScriptPath
-    $shortcut.WindowStyle = 7
-    $shortcut.Save()
+    $task = New-CampusStartupTask $ScriptPath
+    $null = Register-ScheduledTask -TaskName $taskName -InputObject $task -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
 }
 
 # 主入口：优先处理配置和开机设置，再带互斥锁等待网络并执行无浏览器登录。
-function Start-CampusApp([string]$ScriptPath, [bool]$Configure, [bool]$Install, [bool]$Uninstall, [bool]$CheckOnly) {
+function Start-CampusApp([string]$ScriptPath, [bool]$Configure, [bool]$Install, [bool]$Uninstall, [bool]$CheckOnly, [bool]$Startup = $false) {
     $script:CampusDataDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'CampusNetworkLogin'
     $client = $null
     $mutex = [Threading.Mutex]::new($false, 'Local\CampusNetworkLogin_2222')
@@ -282,6 +339,7 @@ function Start-CampusApp([string]$ScriptPath, [bool]$Configure, [bool]$Install, 
     try {
         $locked = $mutex.WaitOne(0)
         if (-not $locked) { Write-Host '校园网脚本或配置窗口已经在运行。'; return 6 }
+        if ($Startup) { Write-CampusLog '自启动任务已触发，正在检查配置和校园网。' }
         if ($Uninstall) { Set-CampusStartup $false $ScriptPath; Write-CampusLog '已取消开机自动登录，保留原配置。'; return 0 }
         if ($CheckOnly) {
             $client = New-WebCCClient
@@ -295,29 +353,42 @@ function Start-CampusApp([string]$ScriptPath, [bool]$Configure, [bool]$Install, 
         }
         $config = $null
         try { $config = Read-CampusConfig } catch { Write-CampusLog '配置无法读取，请重新填写。' }
+        if ($Startup -and $null -eq $config) {
+            Write-CampusLog '自启动未登录：尚未完成账号配置。'
+            Show-CampusNotification '尚未配置校园网账号。请双击 Configure.cmd 完成配置。' $false
+            return 2
+        }
         if ($Configure -or $null -eq $config) {
             $config = Show-CampusConfig
             if ($null -eq $config) { Write-CampusLog '已取消配置，未执行登录。'; return 2 }
             Write-CampusLog '配置已加密保存。'
             if ($Configure) { return 0 }
         }
-        if ($Install) { Set-CampusStartup $true $ScriptPath; Write-CampusLog '已启用当前用户的开机自动登录。'; return 0 }
+        if ($Install) { Set-CampusStartup $true $ScriptPath; Write-CampusLog '已启用登录时立即触发的校园网计划任务。'; return 0 }
         $client = New-WebCCClient
         Write-CampusLog '正在连接校园网入口，无需打开浏览器……'
         # 仅重试无副作用的 Check；密码错误和套餐开通失败不会重复提交。
         $ready = $false
-        for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        $deadline = [DateTime]::UtcNow.AddSeconds(180)
+        $attempt = 0
+        do {
             try { $null = Invoke-WebCC $client 'Check'; $ready = $true; break } catch { }
-            Start-Sleep -Seconds 5
-        }
+            $attempt++
+            if ($attempt -eq 1) { Write-CampusLog '网络尚未就绪，后台等待连接（最多约三分钟）。' }
+            Start-Sleep -Seconds ([Math]::Min($attempt, 5))
+        } while ([DateTime]::UtcNow -lt $deadline)
         if (-not $ready) { throw '无法连接校园网入口，请确认已连接学校 Wi-Fi 或网线。' }
         Invoke-CampusLogin $client $config
+        Show-CampusNotification '校园网已连接，可以上网了。此提示会自动关闭。' $true
         return 0
     } catch {
         # 外部异常仅记类型，防止网络异常附带敏感请求；自身明确提示可以展示。
         if ($_.Exception -is [Management.Automation.RuntimeException] -and $_.Exception.Message -notmatch 'http|password|username') {
             Write-CampusLog ('失败：' + $_.Exception.Message)
         } else { Write-CampusLog ('运行失败，错误类型：' + $_.Exception.GetType().Name) }
+        if (-not $Configure -and -not $Install -and -not $Uninstall -and -not $CheckOnly) {
+            Show-CampusNotification '校园网自动登录失败。请运行 TestLogin.cmd 查看原因，或用 Configure.cmd 修改配置。' $false
+        }
         return 1
     } finally {
         if ($null -ne $client) { $client.Dispose() }

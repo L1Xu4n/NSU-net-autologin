@@ -101,6 +101,18 @@ $thrown=$false
 try { Invoke-CampusLogin $null $config } catch { $thrown=$true }
 Assert-True ($thrown -and -not $script:calls.Contains('OpenNet')) 'Malformed state accepted.'
 Write-Output "PASS: $script:checks headless regression checks."
+$definition = New-CampusStartupTask (Join-Path $PSScriptRoot '..\CampusLogin.ps1')
+Assert-True ($definition.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger') 'Startup trigger is not a logon trigger.'
+Assert-True ([string]::IsNullOrEmpty($definition.Triggers[0].Delay)) 'Unexpected startup delay.'
+Assert-True ($definition.Principal.LogonType -eq 3) 'Task does not use the interactive user session.'
+Assert-True ($definition.Principal.RunLevel -eq 0) 'Task unexpectedly requests elevation.'
+Assert-True (-not $definition.Settings.DisallowStartIfOnBatteries) 'Task disabled on battery.'
+Assert-True (-not $definition.Settings.StopIfGoingOnBatteries) 'Task stops when switching to battery.'
+Assert-True (-not $definition.Settings.RunOnlyIfNetworkAvailable) 'Scheduler incorrectly gates captive network startup.'
+Assert-True ($definition.Settings.MultipleInstances -eq 2) 'Task allows duplicate instances.'
+Assert-True ($definition.Actions[0].Arguments.EndsWith(' -Startup')) 'Startup mode argument missing.'
+Assert-True ($definition.Settings.ExecutionTimeLimit -eq 'PT6M') 'Task execution limit changed.'
+Write-Output "PASS: $script:checks total regression checks including startup task definition."
 } finally {
     # Delete only this run's temporary test configuration, never the user's real data.
     $resolved = [IO.Path]::GetFullPath($script:CampusDataDir)

@@ -16,7 +16,9 @@
 | Test-WebCCOnline | 判断本机 IP 是否出现在在线列表 |
 | Select-WebCCPackage | 唯一匹配完整套餐名或运营商 |
 | Invoke-CampusLogin | 执行会话检查、登录、套餐开通及在线验证 |
-| Set-CampusStartup | 启用或取消当前用户的开机快捷方式 |
+| Show-CampusNotification | 显示不抢焦点、自动关闭的登录结果提示 |
+| New-CampusStartupTask | 构建当前用户登录触发、无额外延迟的计划任务定义 |
+| Set-CampusStartup | 注册/删除计划任务，并在成功安装后清理旧快捷方式 |
 | Start-CampusApp | 处理命令参数、配置、互斥运行、网络等待与异常 |
 
 ## 测试辅助函数
