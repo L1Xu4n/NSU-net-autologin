@@ -1,0 +1,78 @@
+# NSU-net-autologin
+
+成都东软学院 WebCC 校园网自动登录脚本，适用于 Windows 10/11。首次填写账号、密码并选择运营商，后续直接通过校园网接口登录和开通套餐，**无需打开浏览器**。
+
+本项目为非官方工具，目前为预发布版本，仅适配 `2.2.2.2/Auth.ashx`。
+
+## 开始使用
+
+1. 从 [Releases](https://github.com/L1Xu4n/NSU-net-autologin/releases) 下载 ZIP，解压到一个长期保留的文件夹。
+2. 连接学校 Wi-Fi 或网线，双击 `Start.cmd`。
+3. 在首次配置窗口填写校园网账号、密码，选择移动、联通或电信，然后保存。
+4. 需要开机自动登录时，双击 `Install.cmd`。它会在登录 Windows 桌面后运行，无需管理员权限。
+
+同一运营商有多个套餐时，在“完整套餐名”中填写网页按钮的完整文字，例如 `学生-移动-200M`。有多个匹配或没有匹配时，脚本会停止，不擅自换选其他套餐。
+
+Windows 自带的 Windows PowerShell 5.1 即可运行，不需要 Node.js、Python、Edge、Codex 或浏览器扩展。
+
+## 双击入口
+
+| 文件 | 用途 |
+| --- | --- |
+| `Start.cmd` | 首次配置并登录，以后立即登录 |
+| `Configure.cmd` | 修改账号、密码、运营商和套餐；保存后下次运行生效 |
+| `TestLogin.cmd` | 显示过程和退出码，便于排查 |
+| `Install.cmd` | 启用当前用户的开机自动登录 |
+| `Uninstall.cmd` | 取消自动启动，保留账号配置 |
+
+修改配置时，原账号的密码留空表示保留；更换账号必须填写新密码。取消配置窗口不会更改原设置。启用自动启动后请勿移动项目文件夹；如需移动，在新目录再次运行 `Install.cmd`。
+
+## 密码、协议和日志
+
+个人配置保存在 `%LOCALAPPDATA%\CampusNetworkLogin\config.clixml`，密码使用 Windows DPAPI 加密，仅供当前 Windows 用户解密。不要上传或分享该私人配置文件。分享本项目时，其他人首次运行会填写自己的信息。
+
+日志在 `%LOCALAPPDATA%\CampusNetworkLogin\CampusLogin.log`，不记录账号、密码、密码编码、Cookie 或接口完整响应。约 1 MB 时轮转并保留一份旧日志。
+
+脚本使用学校现有的 **HTTP** 接口及网页相同的 DES 编码。DES 编码不能替代 HTTPS 的传输保护；脚本不关闭证书校验、不走系统代理、不跟随跨站重定向。若学校更换协议或入口，本项目需要相应调整。
+
+脚本不会下线其他设备、修改密码、购买套餐或反复提交错误密码。扫码、验证码、设备数量上限等情况需要用户处理。
+
+## 运行流程
+
+等待校园网 → 检查会话 → 必要时提交一次登录 → 获取套餐 → 选择指定运营商/套餐 → 确认本机 IP 出现在在线列表。
+
+如果本机已经在线，会直接结束。账号通过验证不等于网络已经开通；必须确认本机在线才算成功。新设备切换时，支持网页协议中的有限次数 `ReConnect` 轮询。
+
+## 验证范围
+
+- 29 项本地回归检查覆盖密码编码、配置加密读写、套餐匹配、完整模拟登录流程、错误密码、在线设备上限和响应校验。
+- 密码编码与 Node.js 内置加密库生成的独立测试向量交叉核对。
+- 已在实际校园网通过无浏览器的只读 `Check` / `GetInfo` 检查。
+- **真实账号的离线登录、套餐开通及重启后自动运行仍待实测。** 预发布版本中的模拟测试不代表这些步骤已验证。
+
+## 排查
+
+运行 `TestLogin.cmd`，先查看提示与日志。退出码：`0` 成功，`1` 失败，`2` 取消配置，`6` 已有实例或配置窗口运行。
+
+仅检查接口、不提交密码或开通套餐：
+
+```powershell
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\CampusLogin.ps1 -CheckOnly
+```
+
+## 开发和打包
+
+```powershell
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\tests\Test-Core.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-Release.ps1
+```
+
+测试只使用虚构账号、临时目录和模拟接口，不需要连接学校网络，不修改个人配置或启动项。打包输出在 `dist/`，按明确的文件清单打包，不包含测试数据、日志、私人配置或 Git 历史。
+
+需要重新生成独立密码测试向量时才需要 Node.js：
+
+```powershell
+node tests/make-des-vectors.cjs tests/des-vectors.json
+```
+
+完整函数说明见 [docs/FUNCTIONS.md](docs/FUNCTIONS.md)。

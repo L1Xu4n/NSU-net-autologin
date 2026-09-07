@@ -1,0 +1,16 @@
+# Personal credentials and runtime logs must never be committed.
+*.clixml
+*.log
+*.log.previous
+*.tmp
+*.previous
+CampusLogin.settings.json
+
+# Generated artifacts and local task notes.
+/dist/
+/build/
+/work/
+/PROGRESS.md
+/TODO.md
+.DS_Store
+Thumbs.db
