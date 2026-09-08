@@ -335,14 +335,17 @@ public class CampusNotificationWindow : Form {
     }
 }
 
-# 创建当前用户专属的登录触发任务，无额外延迟、不要求网络已连接、不需要存储 Windows 密码。
+# 创建当前用户登录和解锁触发的任务，覆盖休眠后重新进入桌面；不要求网络已连接。
 function New-CampusStartupTask([string]$ScriptPath) {
     $userId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $ScriptPath + '" -Startup') -WorkingDirectory (Split-Path -Parent $ScriptPath)
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+    # New-ScheduledTaskTrigger 不支持解锁参数；用任务调度器的原生 CIM 类型定义当前用户解锁事件。
+    $unlockClass = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskSessionStateChangeTrigger'
+    $unlock = New-CimInstance -CimClass $unlockClass -ClientOnly -Property @{ Enabled = $true; StateChange = [uint32]8; UserId = $userId }
     $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 6)
-    return New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description '登录 Windows 后立即检查校园网并自动登录；结果以桌面提示显示。'
+    return New-ScheduledTask -Action $action -Trigger @($trigger, $unlock) -Principal $principal -Settings $settings -Description '登录或解锁 Windows 后检查校园网，休眠后解锁可自动重连；结果以桌面提示显示。'
 }
 
 # 注册或移除当前用户任务；只有新任务注册成功才移除旧快捷方式，避免迁移失败后无法自启。
@@ -369,7 +372,7 @@ function Start-CampusApp([string]$ScriptPath, [bool]$Configure, [bool]$Install, 
     try {
         $locked = $mutex.WaitOne(0)
         if (-not $locked) { Write-Host '校园网脚本或配置窗口已经在运行。'; return 6 }
-        if ($Startup) { Write-CampusLog '自启动任务已触发，正在检查配置和校园网。' }
+        if ($Startup) { Write-CampusLog '自启动任务已触发（登录或解锁），正在检查配置和校园网。' }
         if ($Uninstall) { Set-CampusStartup $false $ScriptPath; Write-CampusLog '已取消开机自动登录，保留原配置。'; return 0 }
         if ($CheckOnly) {
             $client = New-WebCCClient
@@ -394,7 +397,7 @@ function Start-CampusApp([string]$ScriptPath, [bool]$Configure, [bool]$Install, 
             Write-CampusLog '配置已加密保存。'
             if ($Configure) { return 0 }
         }
-        if ($Install) { Set-CampusStartup $true $ScriptPath; Write-CampusLog '已启用登录时立即触发的校园网计划任务。'; return 0 }
+        if ($Install) { Set-CampusStartup $true $ScriptPath; Write-CampusLog '已启用登录或解锁时触发的校园网计划任务，支持休眠后解锁自动重连。'; return 0 }
         $client = New-WebCCClient
         Write-CampusLog '正在连接校园网入口，无需打开浏览器……'
         # 仅重试无副作用的 Check；密码错误和套餐开通失败不会重复提交。

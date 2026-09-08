@@ -18,9 +18,9 @@
 | Assert-WebCCNoPhoneVerification | 清理消息中的 HTML 和空白，识别电话验证要求，并抛出带专用标记的异常；不显示原始消息 |
 | Invoke-CampusLogin | 执行会话检查、登录、套餐开通及在线验证；每个阶段检测电话验证并停止后续请求 |
 | Show-CampusNotification | 显示不抢焦点的结果提示；电话验证提示保留两分钟，点击按钮打开固定校园网入口 |
-| New-CampusStartupTask | 构建当前用户登录触发、无额外延迟的计划任务定义 |
+| New-CampusStartupTask | 构建当前用户登录和解锁触发的计划任务，休眠后解锁复用自动登录流程；不主动唤醒电脑 |
 | Set-CampusStartup | 注册/删除计划任务，并在成功安装后清理旧快捷方式 |
-| Start-CampusApp | 处理命令参数、配置、互斥运行、网络等待与异常；把电话验证异常转为专用操作指引 |
+| Start-CampusApp | 处理命令参数、配置、互斥运行、网络等待与异常；登录或解锁时检查网络，把电话验证异常转为专用操作指引 |
 
 ## 测试辅助函数
 

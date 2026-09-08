@@ -136,6 +136,10 @@ Write-Output "PASS: $script:checks headless regression checks."
 $definition = New-CampusStartupTask (Join-Path $PSScriptRoot '..\CampusLogin.ps1')
 Assert-True ($definition.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger') 'Startup trigger is not a logon trigger.'
 Assert-True ([string]::IsNullOrEmpty($definition.Triggers[0].Delay)) 'Unexpected startup delay.'
+Assert-True ($definition.Triggers.Count -eq 2) 'Expected both logon and unlock triggers.'
+$unlockTrigger = @($definition.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskSessionStateChangeTrigger' })
+Assert-True ($unlockTrigger.Count -eq 1 -and $unlockTrigger[0].StateChange -eq 8) 'Missing workstation unlock trigger.'
+Assert-True ($unlockTrigger[0].Enabled -and $unlockTrigger[0].UserId -eq [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) 'Unlock trigger must be enabled only for the current user.'
 Assert-True ($definition.Principal.LogonType -eq 3) 'Task does not use the interactive user session.'
 Assert-True ($definition.Principal.RunLevel -eq 0) 'Task unexpectedly requests elevation.'
 Assert-True (-not $definition.Settings.DisallowStartIfOnBatteries) 'Task disabled on battery.'
@@ -167,6 +171,13 @@ try {
     Set-Scenario @($ok,$no,$no)
     $exitCode=Start-CampusApp -ScriptPath (Join-Path $PSScriptRoot '..\CampusLogin.ps1')
     Assert-True ($exitCode -eq 1 -and -not $script:notice.PhoneVerification) 'Ordinary failure displayed phone verification notice.'
+    # Unlock reuses startup mode: an expired session reconnects, while an online session performs no login or package request.
+    Set-Scenario @($ok,$no,$ok,$off,$ok,$on)
+    $exitCode=Start-CampusApp -ScriptPath (Join-Path $PSScriptRoot '..\CampusLogin.ps1') -Startup $true
+    Assert-True ($exitCode -eq 0 -and $script:notice.Success -and ($script:calls -join ',') -eq 'Check,Check,Login,GetInfo,OpenNet,GetInfo') 'Startup mode failed to reconnect an expired session.'
+    Set-Scenario @($ok,$ok,$on)
+    $exitCode=Start-CampusApp -ScriptPath (Join-Path $PSScriptRoot '..\CampusLogin.ps1') -Startup $true
+    Assert-True ($exitCode -eq 0 -and ($script:calls -join ',') -eq 'Check,Check,GetInfo') 'Startup mode repeated login for an online session.'
 } finally { $script:CampusDataDir=$testDataDir }
 Write-Output "PASS: $script:checks total regression checks including startup task definition."
 } finally {
