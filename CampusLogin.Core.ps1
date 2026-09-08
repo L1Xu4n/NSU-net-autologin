@@ -218,18 +218,32 @@ function Select-WebCCPackage($Data, $Config) {
     return $choices[0]
 }
 
-# 完成会话检查、至多一次密码登录、套餐开通和在线验证，不主动下线任何设备。
+# 识别接口消息中的电话验证要求；只检查文本，不展示原始 HTML、号码或链接。
+function Assert-WebCCNoPhoneVerification($Response) {
+    if ($null -eq $Response -or $Response.Message -isnot [string]) { return }
+    $message = [Net.WebUtility]::HtmlDecode(($Response.Message -replace '<[^>]*>', '')) -replace '\s+', ''
+    if ($message -match '(电话|手机|语音|短信).{0,40}(验证|认证)|(验证|认证).{0,40}(电话|手机|语音|短信)|拨打.{0,40}(电话|号码|验证|认证)|phoneverification|voicecode') {
+        $error = [InvalidOperationException]::new('校园网要求电话验证，请打开校园网网页，按页面提示完成验证后重新运行 Start.cmd。')
+        $error.Data['CampusPhoneVerification'] = $true
+        throw $error
+    }
+}
+
+# 完成会话检查、至多一次密码登录、套餐开通和在线验证；电话验证时停止自动操作。
 function Invoke-CampusLogin($Client, $Config) {
     $check = Invoke-WebCC $Client 'Check'
+    Assert-WebCCNoPhoneVerification $check
     if (-not (Test-WebCCSuccess $check)) {
         if ($check.Result -eq 'needQRLogin') { throw '校园网要求扫码验证，需手动完成后再试。' }
         Write-CampusLog '正在验证校园网账号……'
         $encoded = ConvertTo-WebCCPassword $Config.Credential
         try { $login = Invoke-WebCC $Client 'Login' @{ username = $Config.Credential.UserName; password = $encoded; remember = $false } }
         finally { $encoded = $null }
+        Assert-WebCCNoPhoneVerification $login
         if (-not (Test-WebCCSuccess $login)) { throw '账号验证失败。请检查配置中的账号密码，或查看校园网是否要求额外验证。' }
     }
     $info = Invoke-WebCC $Client 'GetInfo'
+    Assert-WebCCNoPhoneVerification $info
     if (-not (Test-WebCCSuccess $info)) { throw '无法读取校园网账号状态。' }
     if (Test-WebCCOnline $info.Data) { Write-CampusLog '成功：校园网接口确认本机已上线。'; return }
     if ($null -eq $info.Data.PSObject.Properties['MOC']) { throw '校园网未返回设备数量限制。' }
@@ -237,6 +251,7 @@ function Invoke-CampusLogin($Client, $Config) {
     $package = Select-WebCCPackage $info.Data $Config
     Write-CampusLog '账号验证完成，正在开通所选运营商套餐……'
     $opened = Invoke-WebCC $Client 'OpenNet' @{ Package = $package }
+    Assert-WebCCNoPhoneVerification $opened
     if ($opened.Result -isnot [bool] -and $opened.Result -eq 192) {
         if ([string]::IsNullOrWhiteSpace([string]$opened.Token)) { throw '校园网设备切换响应缺少令牌。' }
         # 新设备可能需要网页协议中的 ReConnect，最多轮询 60 秒且不写入令牌。
@@ -245,20 +260,22 @@ function Invoke-CampusLogin($Client, $Config) {
         do {
             Start-Sleep -Seconds 1
             $reconnect = Invoke-WebCC $Client 'ReConnect' @{ Token = $opened.Token }
+            Assert-WebCCNoPhoneVerification $reconnect
             if (Test-WebCCSuccess $reconnect) { break }
             if ($reconnect.Result -ne 'wait') { throw '校园网设备切换失败，请手动检查连接。' }
         } while ([DateTime]::UtcNow -lt $until)
     } elseif (-not (Test-WebCCSuccess $opened)) { throw '套餐开通失败，请检查套餐配置或校园网账号状态。' }
     for ($attempt = 0; $attempt -lt 10; $attempt++) {
         $info = Invoke-WebCC $Client 'GetInfo'
+        Assert-WebCCNoPhoneVerification $info
         if ((Test-WebCCSuccess $info) -and (Test-WebCCOnline $info.Data)) { Write-CampusLog '成功：套餐已开通，本机已上线。'; return }
         Start-Sleep -Seconds 2
     }
     throw '套餐请求已提交，但校园网尚未确认本机上线。请查看状态后再试。'
 }
 
-# 显示不抢焦点的桌面角落提示，八秒后关闭；通知失败不影响登录结果。
-function Show-CampusNotification([string]$Message, [bool]$Success) {
+# 显示不抢焦点的提示；电话验证提醒保留两分钟，并提供固定校园网入口按钮。
+function Show-CampusNotification([string]$Message, [bool]$Success, [bool]$PhoneVerification = $false) {
     $form = $null
     $timer = $null
     try {
@@ -284,6 +301,7 @@ public class CampusNotificationWindow : Form {
         $form.StartPosition = 'Manual'
         $form.Text = '校园网自动登录'
         $form.ClientSize = [Drawing.Size]::new(370, 105)
+        if ($PhoneVerification) { $form.ClientSize = [Drawing.Size]::new(430, 245); $form.Text = '校园网需要电话验证' }
         $form.Font = [Drawing.Font]::new('Microsoft YaHei UI', 10)
         $area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $form.Location = [Drawing.Point]::new(($area.Right - $form.Width - 16), ($area.Bottom - $form.Height - 16))
@@ -292,8 +310,20 @@ public class CampusNotificationWindow : Form {
         $label.Text = $Message
         $label.ForeColor = if ($Success) { [Drawing.Color]::DarkGreen } else { [Drawing.Color]::DarkRed }
         [void]$form.Controls.Add($label)
+        if ($PhoneVerification) {
+            $label.SetBounds(16, 15, 398, 165)
+            $open = [Windows.Forms.Button]::new()
+            $open.Text = '打开验证网页'
+            $open.SetBounds(16, 190, 180, 36)
+            # 仅在用户点击时打开固定入口；不信任接口返回的链接，也不传递账号或 Cookie。
+            $open.Add_Click({
+                try { Start-Process -FilePath 'http://2.2.2.2/' -ErrorAction Stop }
+                catch { $label.Text = "浏览器未能打开。请手动在浏览器地址栏输入 http://2.2.2.2/ ，按网页提示完成电话验证，再运行 Start.cmd。" }
+            })
+            [void]$form.Controls.Add($open)
+        }
         $timer = [Windows.Forms.Timer]::new()
-        $timer.Interval = 8000
+        $timer.Interval = if ($PhoneVerification) { 120000 } else { 8000 }
         # Close only this notification window; do not affect the user's other applications.
         $timer.Add_Tick({ $form.Close() })
         $timer.Start()
@@ -382,6 +412,11 @@ function Start-CampusApp([string]$ScriptPath, [bool]$Configure, [bool]$Install, 
         Show-CampusNotification '校园网已连接，可以上网了。此提示会自动关闭。' $true
         return 0
     } catch {
+        if ($_.Exception.Data['CampusPhoneVerification'] -eq $true) {
+            Write-CampusLog '需要电话验证：请在浏览器打开校园网入口，完成验证后重新运行 Start.cmd。'
+            Show-CampusNotification "校园网要求电话验证，自动登录已暂停。`r`n1. 点击下方按钮打开 http://2.2.2.2/ 。`r`n2. 如需登录，请登录并选择原运营商套餐，按网页提示拨号或输入验证码。`r`n3. 完成后重新运行 Start.cmd。`r`n此提醒两分钟后关闭，也可手动关闭。" $false $true
+            return 1
+        }
         # 外部异常仅记类型，防止网络异常附带敏感请求；自身明确提示可以展示。
         if ($_.Exception -is [Management.Automation.RuntimeException] -and $_.Exception.Message -notmatch 'http|password|username') {
             Write-CampusLog ('失败：' + $_.Exception.Message)

@@ -58,6 +58,19 @@ $thrown=$false
 try { $null=Invoke-WebCC $null 'Logout' } catch { $thrown=$true }
 Assert-True $thrown 'Unexpected logout action permitted.'
 
+foreach ($message in @('非常用设备，请先完成电话验证！', '请使用绑定手机拨打电话进行认证', '<b>电话</b>&nbsp;<span>语音验证</span>', '请拨打028-00000000获取验证码')) {
+    $detected=$false
+    try { Assert-WebCCNoPhoneVerification ([pscustomobject]@{Result=$false;Message=$message}) }
+    catch { $detected=$_.Exception.Data['CampusPhoneVerification'] -eq $true }
+    Assert-True $detected 'Phone verification message not recognized.'
+}
+foreach ($message in @('密码错误', '在线设备数量达到上限', '套餐不存在', '如需帮助请联系服务电话', '你已通过验证')) {
+    Assert-WebCCNoPhoneVerification ([pscustomobject]@{Result=$false;Message=$message})
+    Assert-True $true 'Ordinary response incorrectly classified as phone verification.'
+}
+Assert-WebCCNoPhoneVerification ([pscustomobject]@{Result=$true})
+Assert-WebCCNoPhoneVerification $null
+
 # Replace only the transport for deterministic state-machine tests; no real credentials are submitted.
 function Invoke-WebCC($Client, [string]$Action, [hashtable]$Fields=@{}) {
     $script:calls.Add($Action)
@@ -100,6 +113,25 @@ Set-Scenario @($ok,[pscustomobject]@{Result=$true;Data=[pscustomobject]@{IP='';O
 $thrown=$false
 try { Invoke-CampusLogin $null $config } catch { $thrown=$true }
 Assert-True ($thrown -and -not $script:calls.Contains('OpenNet')) 'Malformed state accepted.'
+
+$phone=[pscustomobject]@{Result=$false;Message='<b>非常用设备，请完成电话验证</b>，私人号码：13800000000'}
+# Check every transition that can return a verification challenge, including device-switch waiting.
+foreach ($scenario in @(
+    @{Responses=@($phone);Calls='Check'},
+    @{Responses=@($no,$phone);Calls='Check,Login'},
+    @{Responses=@($ok,$phone);Calls='Check,GetInfo'},
+    @{Responses=@($ok,$off,$phone);Calls='Check,GetInfo,OpenNet'},
+    @{Responses=@($ok,$off,[pscustomobject]@{Result=192;Token='dummy-token';Sec=5;Message='请完成电话验证'});Calls='Check,GetInfo,OpenNet'},
+    @{Responses=@($ok,$off,[pscustomobject]@{Result=192;Token='dummy-token';Sec=5},$phone);Calls='Check,GetInfo,OpenNet,ReConnect'},
+    @{Responses=@($ok,$off,$ok,$phone);Calls='Check,GetInfo,OpenNet,GetInfo'}
+)) {
+    Set-Scenario $scenario.Responses
+    $detected=$false
+    try { Invoke-CampusLogin $null $config }
+    catch { $detected=$_.Exception.Data['CampusPhoneVerification'] -eq $true }
+    Assert-True $detected 'Login flow lost verification challenge.'
+    Assert-True (($script:calls -join ',') -eq $scenario.Calls) 'API calls continued after verification challenge.'
+}
 Write-Output "PASS: $script:checks headless regression checks."
 $definition = New-CampusStartupTask (Join-Path $PSScriptRoot '..\CampusLogin.ps1')
 Assert-True ($definition.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger') 'Startup trigger is not a logon trigger.'
@@ -112,6 +144,30 @@ Assert-True (-not $definition.Settings.RunOnlyIfNetworkAvailable) 'Scheduler inc
 Assert-True ($definition.Settings.MultipleInstances -eq 2) 'Task allows duplicate instances.'
 Assert-True ($definition.Actions[0].Arguments.EndsWith(' -Startup')) 'Startup mode argument missing.'
 Assert-True ($definition.Settings.ExecutionTimeLimit -eq 'PT6M') 'Task execution limit changed.'
+
+# Use disposable in-memory transport and capture notifications to test the app without opening windows.
+function New-WebCCClient { return [IO.MemoryStream]::new() }
+# Keep the full app test inside its existing temporary configuration directory.
+function Read-CampusConfig { return $script:appTestConfig }
+# Capture the user-facing notice instead of displaying a desktop window during regression tests.
+function Show-CampusNotification([string]$Message, [bool]$Success, [bool]$PhoneVerification = $false) {
+    $script:notice=[pscustomobject]@{Message=$Message;Success=$Success;PhoneVerification=$PhoneVerification}
+}
+# Capture logs so the app test never touches the real user's AppData directory.
+function Write-CampusLog([string]$Message) { $script:logMessages.Add($Message) }
+$testDataDir=$script:CampusDataDir
+$script:appTestConfig=$config
+try {
+    $script:logMessages=[Collections.Generic.List[string]]::new()
+    Set-Scenario @($ok,$ok,$off,$phone)
+    $exitCode=Start-CampusApp -ScriptPath (Join-Path $PSScriptRoot '..\CampusLogin.ps1') -Startup $true
+    Assert-True ($exitCode -eq 1 -and $script:notice.PhoneVerification -and -not $script:notice.Success) 'App failed to display actionable verification notice.'
+    Assert-True ($script:notice.Message.Contains('http://2.2.2.2/') -and $script:notice.Message.Contains('Start.cmd')) 'Verification guidance missing portal or retry step.'
+    Assert-True (-not (($script:logMessages -join ',') + $script:notice.Message).Contains('13800000000')) 'Private response content leaked.'
+    Set-Scenario @($ok,$no,$no)
+    $exitCode=Start-CampusApp -ScriptPath (Join-Path $PSScriptRoot '..\CampusLogin.ps1')
+    Assert-True ($exitCode -eq 1 -and -not $script:notice.PhoneVerification) 'Ordinary failure displayed phone verification notice.'
+} finally { $script:CampusDataDir=$testDataDir }
 Write-Output "PASS: $script:checks total regression checks including startup task definition."
 } finally {
     # Delete only this run's temporary test configuration, never the user's real data.

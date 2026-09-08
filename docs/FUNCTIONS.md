@@ -15,15 +15,18 @@
 | Test-WebCCSuccess | 只接受 JSON 布尔 true，避免隐式类型转换 |
 | Test-WebCCOnline | 判断本机 IP 是否出现在在线列表 |
 | Select-WebCCPackage | 唯一匹配完整套餐名或运营商 |
-| Invoke-CampusLogin | 执行会话检查、登录、套餐开通及在线验证 |
-| Show-CampusNotification | 显示不抢焦点、自动关闭的登录结果提示 |
+| Assert-WebCCNoPhoneVerification | 清理消息中的 HTML 和空白，识别电话验证要求，并抛出带专用标记的异常；不显示原始消息 |
+| Invoke-CampusLogin | 执行会话检查、登录、套餐开通及在线验证；每个阶段检测电话验证并停止后续请求 |
+| Show-CampusNotification | 显示不抢焦点的结果提示；电话验证提示保留两分钟，点击按钮打开固定校园网入口 |
 | New-CampusStartupTask | 构建当前用户登录触发、无额外延迟的计划任务定义 |
 | Set-CampusStartup | 注册/删除计划任务，并在成功安装后清理旧快捷方式 |
-| Start-CampusApp | 处理命令参数、配置、互斥运行、网络等待与异常 |
+| Start-CampusApp | 处理命令参数、配置、互斥运行、网络等待与异常；把电话验证异常转为专用操作指引 |
 
 ## 测试辅助函数
 
 `tests/Test-Core.ps1` 中的 `Assert-True` 检查结果；模拟的 `Invoke-WebCC` 只消费预设响应；模拟 `Start-Sleep` 跳过等待；`Set-Scenario` 为每个场景重置响应队列和操作记录。它们不进行真实网络操作。
+
+主入口测试另用模拟 `New-WebCCClient` 返回可释放的内存流、模拟 `Read-CampusConfig` 返回虚构配置、模拟 `Show-CampusNotification` 捕获提醒内容、模拟 `Write-CampusLog` 捕获日志。这些替身用于确认提醒路由和敏感信息保护，不打开浏览器、不触碰真实账号配置。
 
 `tests/make-des-vectors.cjs` 的 `makeVector` 使用相同子密钥的 TripleDES 生成与 DES 等效的独立测试向量，只使用虚构数据。
 
