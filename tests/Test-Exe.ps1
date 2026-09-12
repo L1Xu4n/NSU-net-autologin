@@ -53,7 +53,7 @@ try {
         $start.Arguments = '--ui-test-large'
         $process = [Diagnostics.Process]::Start($start)
         if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'Large UI test timeout.' }
-        if ($process.ExitCode -ne 0) { throw 'Scaled phone notification layout failed.' }
+        if ($process.ExitCode -ne 0) { throw ('Scaled UI layout failed: ' + $process.StandardError.ReadToEnd()) }
         $process.Dispose()
         Copy-Item -LiteralPath (Join-Path $root 'native-phone.bmp') -Destination (Join-Path $preview 'phone-large.bmp') -Force
     }

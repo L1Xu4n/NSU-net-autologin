@@ -371,6 +371,11 @@ static BOOL ui_test(HWND w) {
     ok = ok && inside(w, GetDlgItem(w, 401));
     UpdateWindow(w);
     ok = preview(w, L"native-menu-phone.bmp") && ok;
+    if (!ok) {
+        GetClientRect(w, &r);
+        fprintf(stderr, "UI layout failed: scale=%.2f, client=%ldx%ld, expected=%dx%d.\n", scale, r.right,
+                r.bottom, px(510), px(608));
+    }
     DestroyWindow(w);
     return ok;
 }
@@ -584,6 +589,14 @@ static LRESULT CALLBACK about_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
 
 /* Handle guided setup, the startup toggle, verification links and background-operation results. */
 static LRESULT CALLBACK main_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
+    /* UI fixtures deliberately render 150% windows even on a smaller CI desktop.
+       Production still fits its scale to the available work area. */
+    if (msg == WM_GETMINMAXINFO && testMode) {
+        MINMAXINFO *limits = (MINMAXINFO *)lp;
+        limits->ptMaxTrackSize.x = px(1200);
+        limits->ptMaxTrackSize.y = px(1200);
+        return 0;
+    }
     if (msg == WM_CTLCOLORSTATIC)
         return paint_text(wp, lp);
     if (msg == WM_DRAWITEM)
