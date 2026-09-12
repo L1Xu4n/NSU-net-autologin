@@ -1,5 +1,6 @@
 # Personal credentials and runtime logs must never be committed.
 *.clixml
+*.native
 *.log
 *.log.previous
 *.tmp

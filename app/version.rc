@@ -1,0 +1,28 @@
+#include <winres.h>
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "L1Xu4n"
+            VALUE "FileDescription", "NSU Campus Network Autologin"
+            VALUE "FileVersion", "1.0"
+            VALUE "InternalName", "NSU-Net-Autologin"
+            VALUE "OriginalFilename", "NSU-Net-Autologin.exe"
+            VALUE "ProductName", "NSU-Net-Autologin"
+            VALUE "ProductVersion", "1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

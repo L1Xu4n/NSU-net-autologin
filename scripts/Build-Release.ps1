@@ -1,21 +1,23 @@
+param([string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist\v1.0'))
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $version = (Get-Content -LiteralPath (Join-Path $projectRoot 'VERSION') -Raw).Trim()
-if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version.' }
+if ($version -notmatch '^\d+\.\d+(\.\d+)?$') { throw 'Invalid release version.' }
 $releaseName = 'NSU-net-autologin-v' + $version
 $buildRoot = Join-Path $projectRoot 'build'
 $stage = Join-Path $buildRoot ([guid]::NewGuid().ToString())
 $packageRoot = Join-Path $stage $releaseName
-$dist = Join-Path $projectRoot 'dist'
-$files = @('CampusLogin.ps1', 'CampusLogin.Core.ps1', 'Start.cmd', 'Configure.cmd', 'Install.cmd', 'Uninstall.cmd', 'TestLogin.cmd', 'README.md', 'VERSION', 'CHANGELOG.md', 'docs\FUNCTIONS.md')
+$dist = [IO.Path]::GetFullPath($OutputDirectory)
+$files = @('NSU-Net-Autologin.exe')
 try {
     [void][IO.Directory]::CreateDirectory($packageRoot)
     [void][IO.Directory]::CreateDirectory($dist)
+    & (Join-Path $PSScriptRoot 'Build-Exe.ps1') -OutputDirectory $dist
     # Only these reviewed files may enter the downloadable package.
     foreach ($relative in $files) {
         $target = Join-Path $packageRoot $relative
         [void][IO.Directory]::CreateDirectory((Split-Path -Parent $target))
-        Copy-Item -LiteralPath (Join-Path $projectRoot $relative) -Destination $target
+        Copy-Item -LiteralPath (Join-Path $dist $relative) -Destination $target
     }
     $archive = Join-Path $dist ($releaseName + '.zip')
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive -Force

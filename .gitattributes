@@ -1,7 +1,8 @@
 * text=auto
 *.ps1 text eol=crlf
-*.cmd text eol=crlf
 *.md text eol=lf
 *.yml text eol=lf
 *.json text eol=lf
-*.cjs text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.rc text eol=lf

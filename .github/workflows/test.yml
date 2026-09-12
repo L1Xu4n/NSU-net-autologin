@@ -9,9 +9,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run Windows PowerShell regression checks
-        shell: powershell
-        run: ./tests/Test-Core.ps1
       - name: Verify release packaging
         shell: powershell
         run: ./scripts/Build-Release.ps1
+      - name: Verify native EXE, task lifecycle, network wait, and UI
+        shell: powershell
+        run: ./tests/Test-Exe.ps1
