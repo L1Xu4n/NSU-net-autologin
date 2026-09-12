@@ -6,7 +6,7 @@
 
 ## 开始使用
 
-1. 下载发布包，解压到长期保留的文件夹。包内只有 `NSU-Net-Autologin.exe`。
+1. 在Release[下载](https://github.com/L1Xu4n/NSU-net-autologin/releases/tag/v1.0) `NSU-Net-Autologin.exe`。
 2. 使用网线或 WIFI 连接“NSU-SDN”，双击主程序。
 3. 点击最上方「配置账号」，填写校园网账号、密码并选择运营商。
 4. 点击中间的「注册开机自启」，让登录及休眠后解锁时自动连接。自启为可选功能；账号尚未配置时会先引导配置。
