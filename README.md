@@ -4,6 +4,9 @@
 
 本项目为非官方工具，当前正式版为 v1.0，仅适配 `2.2.2.2/Auth.ashx`。
 
+> [!IMPORTANT]
+> 本工具已知会被360报毒！！！项目由GPT-6-Astra基于C语言编写，要正常使用请将该EXE加入白名单，实在不放心可以自己审查源代码并编译或者放弃使用
+
 ## 开始使用
 
 1. 在Release[下载](https://github.com/L1Xu4n/NSU-net-autologin/releases/tag/v1.0) `NSU-Net-Autologin.exe`。
