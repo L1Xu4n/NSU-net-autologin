@@ -1,4 +1,4 @@
-param([string]$ExeDirectory = (Join-Path $PSScriptRoot '..\dist\v1.0'))
+param([string]$ExeDirectory = (Join-Path $PSScriptRoot '..\dist\v1.3'))
 $ErrorActionPreference = 'Stop'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('NSU-native-tests-' + [guid]::NewGuid())
 [void][IO.Directory]::CreateDirectory($root)
@@ -48,6 +48,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $root 'native-wait.bmp') -Destination (Join-Path $preview 'wait.bmp') -Force
         Copy-Item -LiteralPath (Join-Path $root 'native-about.bmp') -Destination (Join-Path $preview 'about.bmp') -Force
         Copy-Item -LiteralPath (Join-Path $root 'native-phone.bmp') -Destination (Join-Path $preview 'phone.bmp') -Force
+        Copy-Item -LiteralPath (Join-Path $root 'native-choice.bmp') -Destination (Join-Path $preview 'choice.bmp') -Force
         Copy-Item -LiteralPath (Join-Path $root 'native-menu-phone.bmp') -Destination (Join-Path $preview 'menu-phone.bmp') -Force
         Copy-Item -LiteralPath (Join-Path $root 'native-menu-installed.bmp') -Destination (Join-Path $preview 'menu-installed.bmp') -Force
         $start.Arguments = '--ui-test-large'
@@ -56,6 +57,7 @@ try {
         if ($process.ExitCode -ne 0) { throw ('Scaled UI layout failed: ' + $process.StandardError.ReadToEnd()) }
         $process.Dispose()
         Copy-Item -LiteralPath (Join-Path $root 'native-phone.bmp') -Destination (Join-Path $preview 'phone-large.bmp') -Force
+        Copy-Item -LiteralPath (Join-Path $root 'native-menu-installed.bmp') -Destination (Join-Path $preview 'menu-large.bmp') -Force
     }
     $afterTask = if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) { Export-ScheduledTask -TaskName $taskName } else { $null }
     if ($beforeTask -cne $afterTask) { throw 'Self-test changed the real scheduled task.' }

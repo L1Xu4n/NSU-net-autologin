@@ -213,7 +213,7 @@ BOOL remove_config(void) {
     data_path(path, L"config.clixml");
     return remove_file(path) && ok;
 }
-/* Read the persisted task back: verify enabled state, executable, argument and both trigger kinds. */
+/* Verify the persisted startup target, triggers and unlimited lifetime required by the resident monitor. */
 static BOOL verify_task(ITaskFolder *folder, BSTR name, const WCHAR *exe, BOOL disabled) {
     IRegisteredTask *task = NULL;
     ITaskDefinition *definition = NULL;
@@ -222,7 +222,8 @@ static BOOL verify_task(ITaskFolder *folder, BSTR name, const WCHAR *exe, BOOL d
     IExecAction *exec = NULL;
     ITriggerCollection *triggers = NULL;
     ITrigger *trigger = NULL;
-    BSTR path = NULL, arguments = NULL;
+    ITaskSettings *settings = NULL;
+    BSTR path = NULL, arguments = NULL, limit = NULL;
     LONG count = 0;
     VARIANT_BOOL enabled = VARIANT_FALSE;
     BOOL ok = FALSE, logon = FALSE, unlock = FALSE;
@@ -235,6 +236,10 @@ static BOOL verify_task(ITaskFolder *folder, BSTR name, const WCHAR *exe, BOOL d
     h = IRegisteredTask_get_Definition(task, &definition);
     if (FAILED(h))
         goto done;
+    h = ITaskDefinition_get_Settings(definition, &settings);
+    if (FAILED(h)) goto done;
+    h = ITaskSettings_get_ExecutionTimeLimit(settings, &limit);
+    if (FAILED(h) || !limit || wcscmp(limit, L"PT0S")) goto done;
     h = ITaskDefinition_get_Actions(definition, &actions);
     if (FAILED(h))
         goto done;
@@ -300,10 +305,13 @@ done:
         IActionCollection_Release(actions);
     if (definition)
         ITaskDefinition_Release(definition);
+    if (settings)
+        ITaskSettings_Release(settings);
     if (task)
         IRegisteredTask_Release(task);
     SysFreeString(path);
     SysFreeString(arguments);
+    SysFreeString(limit);
     return ok;
 }
 /* Run a task operation; mode 3 queries, mode 2 validates, and testName isolates lifecycle tests. */
@@ -405,7 +413,7 @@ static int task_operation(int install, const WCHAR *testName) {
             L"Principals><Settings><MultipleInstancesPolicy>IgnoreNew</"
             L"MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</"
             L"DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</"
-            L"StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT6M</"
+            L"StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</"
             L"ExecutionTimeLimit></Settings><Actions "
             L"Context=\"Author\"><Exec><Command>%s</Command><Arguments>--startup</Arguments></Exec></"
             L"Actions></Task>",

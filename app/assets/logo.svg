@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="NSU 鏍″洯缃?>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#275cc4"/>
+  <path d="M72 180V76L184 180V76" fill="none" stroke="white" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#55e5c0"><circle cx="72" cy="180" r="11"/><circle cx="184" cy="76" r="11"/></g>
+</svg>

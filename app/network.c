@@ -191,10 +191,9 @@ static int prop(Json *j, int obj, const WCHAR *key) {
 static const WCHAR *str(Json *j, int id) { return id && j->n[id].type == STR ? j->n[id].s : L""; }
 /* Require a literal JSON boolean true. */
 static BOOL success(Json *j) { return j->n[prop(j, 1, L"Result")].type == TRUE_VALUE; }
-/* Remove markup/spacing and recognize phone verification without trusting returned links. */
-static BOOL phone(Json *j) {
+/* Decode visible portal text, removing HTML while keeping word boundaries and phone digits. */
+static void message_text(Json *j, WCHAR *s) {
     const WCHAR *p = str(j, prop(j, 1, L"Message"));
-    WCHAR s[4096];
     int k = 0;
     BOOL tag = FALSE;
     while (*p && k < 4095) {
@@ -209,13 +208,13 @@ static BOOL phone(Json *j) {
             }
             v = wcstoul(digits, &end, base);
             if (end > digits && *end == L';' && v > 0 && v <= 65535) {
-                if (!iswspace((WCHAR)v))
-                    s[k++] = towlower((WCHAR)v);
+                s[k++] = iswspace((WCHAR)v) ? L' ' : towlower((WCHAR)v);
                 p = end + 1;
                 continue;
             }
         }
         if (!tag && !wcsncmp(p, L"&nbsp;", 6)) {
+            s[k++] = L' ';
             p += 6;
             continue;
         }
@@ -223,14 +222,46 @@ static BOOL phone(Json *j) {
             tag = TRUE;
         else if (*p == L'>')
             tag = FALSE;
-        else if (!tag && !iswspace(*p))
-            s[k++] = towlower(*p);
+        else if (!tag)
+            s[k++] = iswspace(*p) ? L' ' : towlower(*p);
         p++;
     }
     s[k] = 0;
+}
+/* Recognize verification messages after normalizing markup and spacing. */
+static BOOL phone(Json *j) {
+    WCHAR s[4096];
+    int out = 0;
+    message_text(j, s);
+    for (int i = 0; s[i]; i++)
+        if (!iswspace(s[i])) s[out++] = s[i];
+    s[out] = 0;
     return ((wcsstr(s, L"电话") || wcsstr(s, L"手机") || wcsstr(s, L"短信") || wcsstr(s, L"语音")) &&
             (wcsstr(s, L"验证") || wcsstr(s, L"认证") || wcsstr(s, L"拨打"))) ||
            wcsstr(s, L"phoneverification") || wcsstr(s, L"voicecode");
+}
+/* Extract only a number following a dialing instruction, never a user's unrelated phone number. */
+static void phone_guidance(Json *j) {
+    WCHAR message[4096], number[48] = {0};
+    const WCHAR *cue = NULL;
+    const WCHAR *cues[] = {L"拨打", L"致电", L"呼叫", L"dial", L"call"};
+    message_text(j, message);
+    for (int i = 0; i < 5 && !cue; i++) cue = wcsstr(message, cues[i]);
+    if (cue) {
+        const WCHAR *p = cue;
+        int distance = 0, n = 0, digits = 0;
+        while (*p && !iswdigit(*p) && distance++ < 100) p++;
+        while (*p && n < 47 && (iswdigit(*p) || wcschr(L" -()+", *p))) {
+            if (iswdigit(*p)) digits++;
+            number[n++] = *p++;
+        }
+        while (n && number[n - 1] == L' ') number[--n] = 0;
+        if (digits < 5 || digits > 15 || iswdigit(*p)) number[0] = 0;
+    }
+    if (*number)
+        swprintf_s(errorText, 512, L"需要电话验证，请拨打：%s\r\n\r\n按校园网网页提示完成验证后，再点击“上线”。", number);
+    else
+        StringCchCopyW(errorText, 512, L"校园网要求电话验证，但未返回可识别的拨号号码。\r\n\r\n请点击“打开验证网页”查看号码并完成验证，再点击“上线”。");
 }
 /* Encode all UTF-16 units as JSON escapes, keeping request construction bounded. */
 static BOOL quote(const WCHAR *s, WCHAR *out, size_t cap) {
@@ -298,62 +329,23 @@ done:
     SecureZeroMemory(seed, sizeof(seed));
     return ok;
 }
-/* POST only to the fixed portal; disable redirects/proxies and bound response size. */
-static int http_request(HINTERNET conn, const WCHAR *body, Json *j) {
-    HINTERNET req = WinHttpOpenRequest(conn, L"POST", L"/Auth.ashx", NULL, WINHTTP_NO_REFERER,
-                                       WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-    char *bytes = NULL, *reply = NULL;
-    DWORD disable = WINHTTP_DISABLE_REDIRECTS, status = 0, n = sizeof(status), read = 0, total = 0;
-    int result = 1, size;
-    if (!req)
-        return 1;
-    WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable));
-    {
-        DWORD policy = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
-        WinHttpSetOption(req, WINHTTP_OPTION_AUTOLOGON_POLICY, &policy, sizeof(policy));
-    }
-    size = WideCharToMultiByte(CP_UTF8, 0, body, -1, NULL, 0, NULL, NULL);
-    bytes = calloc(size, 1);
-    reply = calloc(65536, 1);
-    if (!bytes || !reply)
-        goto done;
-    WideCharToMultiByte(CP_UTF8, 0, body, -1, bytes, size, NULL, NULL);
-    if (!WinHttpSendRequest(req, L"Content-Type: application/json; charset=utf-8\r\n", (DWORD)-1, bytes,
-                            size - 1, size - 1, 0) ||
-        !WinHttpReceiveResponse(req, NULL))
-        goto done;
-    if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, NULL, &status, &n,
-                             NULL) ||
-        status != 200)
-        goto done;
-    do {
-        if (total >= 65535)
-            goto done;
-        if (!WinHttpReadData(req, reply + total, 65535 - total, &read))
-            goto done;
-        total += read;
-    } while (read);
-    if (!parse(j, reply) || !prop(j, 1, L"Result"))
-        goto done;
-    result = phone(j) ? 3 : 0;
-done:
-    if (bytes) {
-        SecureZeroMemory(bytes, size);
-        free(bytes);
-    }
-    if (reply) {
-        SecureZeroMemory(reply, 65536);
-        free(reply);
-    }
-    WinHttpCloseHandle(req);
+/* Decode a bounded reply from the transport bound to the selected physical adapter. */
+static int http_request(PortalTransport *conn, const WCHAR *body, Json *j) {
+    char *reply = calloc(65536, 1);
+    int result = 1;
+    if (reply && portal_post(conn, body, reply, 65536) && parse(j, reply) && prop(j, 1, L"Result"))
+        result = phone(j) ? 3 : 0;
+    if (reply) { SecureZeroMemory(reply, 65536); free(reply); }
     return result;
 }
 static const char **testReplies;
 static const WCHAR **testActions;
 static int testIndex, testCount, testMismatch;
+static int testAction;
+static const NetworkAdapter *testSelected, *testWifi;
 static ULONGLONG testClock;
-/* Route offline self-tests through fixed fixtures; normal execution always uses WinHTTP. */
-static int request(HINTERNET conn, const WCHAR *body, Json *j) {
+/* Route offline self-tests through fixed fixtures; normal execution uses the bound socket transport. */
+static int request(PortalTransport *conn, const WCHAR *body, Json *j) {
     if (testReplies) {
         WCHAR expected[80];
         if (testIndex >= testCount) {
@@ -363,6 +355,14 @@ static int request(HINTERNET conn, const WCHAR *body, Json *j) {
         swprintf_s(expected, 80, L"\"DoWhat\":\"%s\"", testActions[testIndex]);
         if (!wcsstr(body, expected))
             testMismatch = 1;
+        if (!wcscmp(testActions[testIndex], L"CloseNet")) {
+            Json *sent = calloc(1, sizeof(Json));
+            char utf[512];
+            const NetworkAdapter *target = testAction == NETWORK_DISCONNECT ? testSelected : testWifi;
+            if (!sent || !target || !WideCharToMultiByte(CP_UTF8, 0, body, -1, utf, 512, NULL, NULL) ||
+                !parse(sent, utf) || wcscmp(str(sent, prop(sent, 1, L"IP")), target->ip)) testMismatch = 1;
+            free(sent);
+        }
         const char *reply = testReplies[testIndex++];
         if (!reply)
             return 1; /* NULL fixtures represent a transport failure. */
@@ -414,41 +414,95 @@ static BOOL package_name(Json *j, Config *c, WCHAR *out) {
     }
     return matches == 1;
 }
+/* Compare a portal MAC with the selected adapter, accepting common separator formats. */
+static BOOL mac_matches(const WCHAR *portal, const WCHAR *local) {
+    WCHAR normalized[13];
+    int n = 0;
+    for (; *portal; portal++) {
+        if (wcschr(L":- .", *portal)) continue;
+        if (!iswxdigit(*portal) || n == 12) return FALSE;
+        normalized[n++] = towlower(*portal);
+    }
+    normalized[n] = 0;
+    return n == 12 && !_wcsicmp(normalized, local);
+}
+/* Require both local IP and adapter MAC before treating an online entry as this device's session. */
+static BOOL adapter_online(Json *j, const NetworkAdapter *wifi) {
+    int data = prop(j, 1, L"Data"), arr = prop(j, data, L"OIA");
+    if (!wifi || !wifi->index || j->n[arr].type != ARR) return FALSE;
+    for (int i = j->n[arr].child; i; i = j->n[i].next)
+        if (!wcscmp(wifi->ip, str(j, prop(j, i, L"IP"))) &&
+            mac_matches(str(j, prop(j, i, L"MAC")), wifi->mac)) return TRUE;
+    return FALSE;
+}
+/* Require the selected source IP; an empty MAC is normal only when the portal confirms this IP is offline. */
+static BOOL selected_identity(Json *j, const NetworkAdapter *selected) {
+    int data = prop(j, 1, L"Data"), mac = prop(j, data, L"MAC");
+    const WCHAR *portalMac = str(j, mac);
+    if (wcscmp(selected->ip, str(j, prop(j, data, L"IP"))) || j->n[mac].type != STR)
+        return FALSE;
+    return *portalMac ? mac_matches(portalMac, selected->mac) : online(j) == 0;
+}
+static PortalTransport cachedPortal;
+static BOOL cachedPortalValid;
+static WCHAR cachedAccount[256];
+/* Clear in-memory portal cookies after account edits; credentials and cookies are never persisted here. */
+void reset_network_session(void) {
+    SecureZeroMemory(&cachedPortal, sizeof(cachedPortal));
+    SecureZeroMemory(cachedAccount, sizeof(cachedAccount));
+    cachedPortalValid = FALSE;
+}
 /* Run the bounded login protocol, stopping immediately for additional verification. */
-int connect_network(Config *c, BOOL checkOnly, NetworkProgress progress) {
-    HINTERNET session = NULL, conn = NULL;
+int connect_network(Config *c, int action, NetworkProgress progress,
+                    const NetworkAdapter *selected, const NetworkAdapter *oldWifi, NetworkSessionState *status) {
+    PortalTransport *conn = calloc(1, sizeof(PortalTransport));
     Json *j = calloc(1, sizeof(Json));
     int r = 1, i, state;
-    BOOL waiting = FALSE;
+    BOOL waiting = FALSE, removedWifi = FALSE, disconnectSent = FALSE;
+    BOOL checkOnly = action == NETWORK_CHECK_ONLY;
+    BOOL inspectOnly = action == NETWORK_INSPECT, authenticated = FALSE;
+    int offlineChecks = 0;
+    NetworkAdapter wifi = {0};
     ULONGLONG until;
     WCHAR encrypted[4096], qname[1600], qpass[25000], body[30000], package[512], qpackage[3100], token[4096],
         qtoken[25000];
     StringCchCopyW(errorText, 512, L"无法连接校园网，请检查学校 Wi-Fi、账号及套餐配置。");
-    if (!j)
+    if (status) status->selected = status->other = -1;
+    if (!j || !conn)
         goto done;
-    session = WinHttpOpen(L"NSU-Net-Autologin/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY, NULL, NULL, 0);
-    if (!session)
+    if (selected) conn->adapter = *selected;
+    if (!testReplies && cachedPortalValid && !wcscmp(cachedAccount, c->account) &&
+        same_adapter(&cachedPortal.adapter, &conn->adapter))
+        *conn = cachedPortal;
+    if (oldWifi) wifi = *oldWifi;
+    if ((action == NETWORK_DISCONNECT || inspectOnly) && !conn->adapter.index) {
+        StringCchCopyW(errorText, 512, L"所选网卡尚未连接，无法确认下线目标。");
         goto done;
-    WinHttpSetTimeouts(session, 8000, 8000, 8000, 8000);
-    conn = WinHttpConnect(session, L"2.2.2.2", 80, 0);
-    if (!conn)
-        goto done;
+    }
     if (!checkOnly && progress)
         progress(NETWORK_CHECKING);
-    until = network_ticks() + (checkOnly ? 0 : 180000);
+    until = network_ticks() + (checkOnly || inspectOnly ? 0 : 180000);
+authenticate:
     do {
-        r = request(conn, L"{\"DoWhat\":\"Check\"}", j);
+        if (!testReplies && !conn->adapter.index) {
+            NetworkLinks links;
+            if (network_links(&links)) {
+                conn->adapter = links.wired.index ? links.wired : links.wifi;
+                if (links.wired.index && links.wifi.index) wifi = links.wifi;
+            }
+        }
+        r = (!testReplies && !conn->adapter.index) ? 1 : request(conn, L"{\"DoWhat\":\"Check\"}", j);
         if (r != 1)
             break;
-        if (!checkOnly && !waiting) {
+        if (!checkOnly && !inspectOnly && !waiting) {
             waiting = TRUE;
             if (progress)
                 progress(NETWORK_WAITING);
         }
         if (network_ticks() >= until) {
-            if (!checkOnly)
+            if (!checkOnly && !inspectOnly)
                 StringCchCopyW(errorText, 512,
-                               L"等待校园网连接超时。请连接 NSU-SDN Wi-Fi 或网线后，再点击“立即连接”。");
+                               L"等待校园网连接超时。请连接 NSU-SDN Wi-Fi 或网线后，再点击“上线”。");
             goto done;
         }
         pause_ms(3000);
@@ -480,6 +534,7 @@ int connect_network(Config *c, BOOL checkOnly, NetworkProgress progress) {
             goto done;
         }
     }
+    authenticated = TRUE;
     r = request(conn, L"{\"DoWhat\":\"GetInfo\"}", j);
     if (r)
         goto done;
@@ -487,6 +542,67 @@ int connect_network(Config *c, BOOL checkOnly, NetworkProgress progress) {
     if (!success(j) || state < 0) {
         r = 1;
         goto done;
+    }
+    if (conn->adapter.index && !selected_identity(j, &conn->adapter)) {
+        StringCchCopyW(errorText, 512, L"校园网返回的 IP / MAC 与所选网卡不一致，已停止切换。请确认网线或 Wi-Fi 直接连接校园网。");
+        r = 1;
+        goto done;
+    }
+    if (conn->adapter.index && state == 1 && !adapter_online(j, &conn->adapter)) {
+        StringCchCopyW(errorText, 512, L"在线记录的 MAC 与所选网卡不符，已停止操作。");
+        r = 1;
+        goto done;
+    }
+    if (status) {
+        status->selected = state;
+        status->other = wifi.index ? (adapter_online(j, &wifi) ? 1 : 0) : -1;
+    }
+    /* Status inspection authenticates the portal if needed, but never changes network sessions. */
+    if (inspectOnly) goto done;
+    if (action == NETWORK_DISCONNECT) {
+        if (state == 0) goto done;
+        if (disconnectSent) {
+            if (++offlineChecks >= 5) {
+                StringCchCopyW(errorText, 512, L"校园网尚未确认下线，请在网页检查后重试。");
+                r = 1;
+                goto done;
+            }
+            pause_ms(1000);
+            goto authenticate;
+        }
+        WCHAR quotedIp[128];
+        if (!quote(conn->adapter.ip, quotedIp, 128)) { r = 1; goto done; }
+        swprintf_s(body, 30000, L"{\"DoWhat\":\"CloseNet\",\"IP\":%s}", quotedIp);
+        r = request(conn, body, j);
+        if (r) goto done;
+        if (!success(j)) {
+            StringCchCopyW(errorText, 512, L"校园网拒绝下线，请在网页检查后重试。");
+            r = 1;
+            goto done;
+        }
+        disconnectSent = TRUE;
+        pause_ms(1000);
+        goto authenticate;
+    }
+    if (wifi.index && !same_adapter(&wifi, &conn->adapter) && adapter_online(j, &wifi)) {
+        if (removedWifi) {
+            StringCchCopyW(errorText, 512, L"校园网尚未确认另一网卡的本机会话下线，已停止切换，请稍后重试。");
+            r = 1;
+            goto done;
+        }
+        WCHAR quotedIp[128];
+        if (!quote(wifi.ip, quotedIp, 128)) { r = 1; goto done; }
+        swprintf_s(body, 30000, L"{\"DoWhat\":\"CloseNet\",\"IP\":%s}", quotedIp);
+        r = request(conn, body, j);
+        if (r) goto done;
+        if (!success(j)) {
+            StringCchCopyW(errorText, 512, L"另一网卡的本机会话下线失败，已停止切换。请在校园网网页检查后重试。");
+            r = 1;
+            goto done;
+        }
+        removedWifi = TRUE;
+        pause_ms(1000);
+        goto authenticate;
     }
     if (state == 1)
         goto done;
@@ -540,19 +656,28 @@ int connect_network(Config *c, BOOL checkOnly, NetworkProgress progress) {
         r = request(conn, L"{\"DoWhat\":\"GetInfo\"}", j);
         if (r)
             goto done;
-        if (success(j) && online(j) == 1)
+        if (success(j) && online(j) == 1 &&
+            (!conn->adapter.index || (selected_identity(j, &conn->adapter) && adapter_online(j, &conn->adapter)))) {
+            if (status) {
+                status->selected = 1;
+                status->other = wifi.index ? (adapter_online(j, &wifi) ? 1 : 0) : -1;
+            }
             goto done;
+        }
         pause_ms(2000);
     }
     r = 1;
     StringCchCopyW(errorText, 512, L"校园网尚未确认本机上线，请在网页检查后重试。");
 done:
+    if (status && r) status->selected = status->other = -1;
     if (r == 3)
-        StringCchCopyW(errorText, 512, PHONE_GUIDANCE);
-    if (conn)
-        WinHttpCloseHandle(conn);
-    if (session)
-        WinHttpCloseHandle(session);
+        phone_guidance(j);
+    if (!testReplies && authenticated && conn) {
+        cachedPortal = *conn;
+        StringCchCopyW(cachedAccount, 256, c->account);
+        cachedPortalValid = TRUE;
+    }
+    if (conn) { SecureZeroMemory(conn, sizeof(*conn)); free(conn); }
     if (j) {
         SecureZeroMemory(j, sizeof(*j));
         free(j);
@@ -565,6 +690,7 @@ done:
     return r;
 }
 static int testProgress[8], testProgressCount;
+static NetworkSessionState testSession;
 /* Record progress stages for retry tests without creating windows or accessing user data. */
 static void record_progress(int stage) {
     if (testProgressCount < 8)
@@ -581,7 +707,7 @@ static BOOL scenario(Config *c, const WCHAR **actions, const char **replies, int
     testMismatch = 0;
     testClock = 0;
     testProgressCount = 0;
-    r = connect_network(c, FALSE, record_progress);
+    r = connect_network(c, testAction, record_progress, testSelected, testWifi, &testSession);
     testReplies = NULL;
     return r == expected && testIndex == count && !testMismatch;
 }
@@ -600,6 +726,12 @@ int native_tests(void) {
     fail += !parse(j, "{\"Result\":true,\"Result\":false}") || success(j);
     fail += !parse(j, "{\"Message\":\"\\u624b\\u673a\\u9a8c\\u8bc1\"}") || !phone(j);
     fail += !parse(j, "{\"Message\":\"&#25163;&#26426;&nbsp;&#39564;&#35777;\"}") || !phone(j);
+    parse(j, "{\"Message\":\"电话验证：请使用绑定手机 13800138000 拨打 <b>028-12345678</b> 完成验证\"}");
+    phone_guidance(j);
+    fail += !phone(j) || !wcsstr(errorText, L"028-12345678") || wcsstr(errorText, L"13800138000") != NULL;
+    parse(j, "{\"Message\":\"phone verification\"}");
+    phone_guidance(j);
+    fail += !wcsstr(errorText, L"未返回");
     fail += !parse(j, "{\"Data\":{\"IP\":\"1\",\"OIA\":[{\"IP\":\"1\"}]}}") || online(j) != 1;
     fail += !parse(j, "{\"Data\":{\"IP\":\"1\"}}") || online(j) != -1;
     fail += !quote(L"\"\\\n", q, 128) || wcscmp(q, L"\"\\u0022\\u005c\\u000a\"") != 0;
@@ -657,6 +789,79 @@ int native_tests(void) {
         StringCchCopyW(c.package, 512, L"missing");
         fail += package_name(j, &c, q);
         c.package[0] = 0;
+        {
+            NetworkAdapter wired = {0}, wifi = {0};
+            wired.index = 1; wifi.index = 2;
+            StringCchCopyW(wired.ip, 16, L"10.0.0.2");
+            StringCchCopyW(wired.mac, 13, L"001122334455");
+            StringCchCopyW(wifi.ip, 16, L"10.0.0.1");
+            StringCchCopyW(wifi.mac, 13, L"aabbccddeeff");
+            const char *both = "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.2\",\"MAC\":\"00-11-22-33-44-55\",\"OIA\":[{\"IP\":\"10.0.0.1\",\"MAC\":\"aabbccddeeff\"}]}}";
+            /* The real portal clears Data.MAC after CloseNet; keep this regression in both directions. */
+            const char *wiredOff = "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.2\",\"MAC\":\"\",\"OIA\":[],\"MOC\":2,\"KXTC\":[{\"套餐名称\":\"test\"}]}}";
+            const char *wiredOn = "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.2\",\"MAC\":\"001122334455\",\"OIA\":[{\"IP\":\"10.0.0.2\",\"MAC\":\"001122334455\"}]}}";
+            const WCHAR *switchActions[] = {L"Check", L"GetInfo", L"CloseNet", L"Check", L"GetInfo", L"OpenNet", L"GetInfo"};
+            const char *switched[] = {yes, both, yes, yes, wiredOff, yes, wiredOn};
+            testSelected = &wired; testWifi = &wifi;
+            fail += !scenario(&c, switchActions, switched, 7, 0);
+            const WCHAR *resumeActions[] = {L"Check", L"GetInfo", L"OpenNet", L"GetInfo"};
+            const char *resumed[] = {yes, wiredOff, yes, wiredOn};
+            fail += !scenario(&c, resumeActions, resumed, 4, 0);
+            const char *unsafeIdentity[] = {
+                "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.9\",\"MAC\":\"\",\"OIA\":[]}}",
+                "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.2\",\"MAC\":\"aabbccddeeff\",\"OIA\":[]}}",
+                "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.2\",\"MAC\":\"\",\"OIA\":[{\"IP\":\"10.0.0.2\",\"MAC\":\"001122334455\"}]}}"
+            };
+            for (int t = 0; t < 3; t++) {
+                const char *rejected[] = {yes, unsafeIdentity[t]};
+                fail += !scenario(&c, b, rejected, 2, 1);
+            }
+            const char *closeFailure[] = {yes, both, "{\"Result\":false}"};
+            fail += !scenario(&c, switchActions, closeFailure, 3, 1);
+            const char *closeVerify[] = {yes, both, verify};
+            fail += !scenario(&c, switchActions, closeVerify, 3, 3);
+            const char *notOffline[] = {yes, both, yes, yes, both};
+            fail += !scenario(&c, switchActions, notOffline, 5, 1);
+            const char *mismatch[] = {yes, on};
+            fail += !scenario(&c, b, mismatch, 2, 1);
+            parse(j, both);
+            wifi.mac[0] = L'0';
+            fail += adapter_online(j, &wifi);
+            const char *alreadyWired[] = {yes, wiredOn};
+            fail += !scenario(&c, b, alreadyWired, 2, 0);
+            wifi.mac[0] = L'a';
+            testAction = NETWORK_INSPECT;
+            const char *inspectOff[] = {yes, wiredOff};
+            fail += !scenario(&c, b, inspectOff, 2, 0) || testSession.selected != 0 || testSession.other != 0;
+            const char *inspectOther[] = {yes, both};
+            fail += !scenario(&c, b, inspectOther, 2, 0) || testSession.selected != 0 || testSession.other != 1;
+            const char *inspectAuthenticated[] = {"{\"Result\":false}", yes, wiredOn};
+            const WCHAR *inspectActions[] = {L"Check", L"Login", L"GetInfo"};
+            fail += !scenario(&c, inspectActions, inspectAuthenticated, 3, 0) || testSession.selected != 1;
+            testAction = NETWORK_DISCONNECT;
+            const char *disconnected[] = {yes, wiredOn, yes, yes, wiredOff};
+            fail += !scenario(&c, switchActions, disconnected, 5, 0);
+            const char *offlineAlready[] = {yes, wiredOff};
+            fail += !scenario(&c, b, offlineAlready, 2, 0);
+            const char *disconnectFailed[] = {yes, wiredOn, "{\"Result\":false}"};
+            fail += !scenario(&c, switchActions, disconnectFailed, 3, 1);
+            const char *disconnectPhone[] = {yes, wiredOn, verify};
+            fail += !scenario(&c, switchActions, disconnectPhone, 3, 3);
+            fail += !scenario(&c, b, mismatch, 2, 1);
+            testAction = NETWORK_CONNECT;
+            wifi.mac[0] = L'a';
+            testSelected = &wifi; testWifi = &wired;
+            const char *wifiSwitch[] = {
+                yes,
+                "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.1\",\"MAC\":\"aabbccddeeff\",\"OIA\":[{\"IP\":\"10.0.0.2\",\"MAC\":\"001122334455\"}]}}",
+                yes, yes,
+                "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.1\",\"MAC\":\"aabbccddeeff\",\"OIA\":[],\"MOC\":2,\"KXTC\":[{\"套餐名称\":\"test\"}]}}",
+                yes,
+                "{\"Result\":true,\"Data\":{\"IP\":\"10.0.0.1\",\"MAC\":\"aabbccddeeff\",\"OIA\":[{\"IP\":\"10.0.0.1\",\"MAC\":\"aabbccddeeff\"}]}}"
+            };
+            fail += !scenario(&c, switchActions, wifiSwitch, 7, 0);
+            testSelected = testWifi = NULL;
+        }
     }
     if (!fail) {
         DWORD n;
