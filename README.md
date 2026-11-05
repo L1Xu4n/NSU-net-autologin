@@ -9,13 +9,13 @@
 
 ## 开始使用
 
-1. 在Release[下载](https://github.com/L1Xu4n/NSU-net-autologin/releases/tag/v1.0) `NSU-Net-Autologin.exe`。
+1. 在 [Release 下载 v1.3](https://github.com/L1Xu4n/NSU-net-autologin/releases/tag/v1.3) 的 `NSU-Net-Autologin.exe`。
 2. 使用网线或 WIFI 连接“NSU-SDN”，双击主程序。
 3. 点击底部「配置账号」，填写校园网账号、密码并选择运营商。
 4. 在主界面选择「网线」或「Wi-Fi」，点击「上线」。未连接的网卡不可选。
 5. 按需点击「注册开机自启」，让登录及休眠后解锁时自动连接。
 
-EXE 使用 Win32、Winsock、IP Helper、CryptoAPI/DPAPI 和任务调度器 COM 接口，不嵌入或调用 PowerShell，不依赖 .NET。v1.0 的原生账号配置可继续使用。主窗口读取实际自启状态：已经注册时，中间按钮显示「卸载自启动」；无法确认状态时提示重新检查，不把读取失败当成未注册。
+EXE 使用 Win32、Winsock、IP Helper、CryptoAPI/DPAPI 和任务调度器 COM 接口，不嵌入或调用 PowerShell，不依赖 .NET。v1.0 的原生账号配置可继续使用。主窗口读取实际自启状态：已经注册时，底部按钮显示「卸载自启动」；无法确认状态时提示重新检查，不把读取失败当成未注册。
 
 原生实现不能保证所有杀毒软件都不误报。本地测试副本被 360 以 `HEUR/QVM202.0.05B9.Malware.Gen` 拦截，目前原因尚未得到厂商确认；当前产物没有代码签名，不能宣称已通过杀毒检测。
 
